@@ -1,5 +1,5 @@
 // 全局变量
-let selectedAPIs = JSON.parse(localStorage.getItem('selectedAPIs') || '["tyyszy","xiaomaomi","dyttzy", "bfzy", "ruyi"]'); // 默认选中天涯资源、暴风资源和如意资源
+let selectedAPIs = JSON.parse(localStorage.getItem('selectedAPIs') || '["tyyszy","dyttzy", "bfzy", "ruyi"]'); // 默认选中资源
 let customAPIs = JSON.parse(localStorage.getItem('customAPIs') || '[]'); // 存储自定义API列表
 
 // 添加当前播放的集数索引
@@ -27,8 +27,8 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // 设置默认API选择（如果是第一次加载）
     if (!localStorage.getItem('hasInitializedDefaults')) {
-        // 仅选择天涯资源、暴风资源和如意资源
-        selectedAPIs = ["tyyszy","xiaomaomi", "bfzy","dyttzy", "ruyi"];
+        // 默认选中资源
+        selectedAPIs = ["tyyszy","bfzy","dyttzy", "ruyi"];
         localStorage.setItem('selectedAPIs', JSON.stringify(selectedAPIs));
         
         // 默认选中过滤开关
@@ -888,6 +888,50 @@ async function search() {
     }
 }
 
+// 切换清空按钮的显示状态
+function toggleClearButton() {
+    const searchInput = document.getElementById('searchInput');
+    const clearButton = document.getElementById('clearSearchInput');
+    if (searchInput.value !== '') {
+        clearButton.classList.remove('hidden');
+    } else {
+        clearButton.classList.add('hidden');
+    }
+}
+
+// 清空搜索框内容
+function clearSearchInput() {
+    const searchInput = document.getElementById('searchInput');
+    searchInput.value = '';
+    const clearButton = document.getElementById('clearSearchInput');
+    clearButton.classList.add('hidden');
+}
+
+// 劫持搜索框的value属性以检测外部修改
+function hookInput() {
+    const input = document.getElementById('searchInput');
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+
+    // 重写 value 属性的 getter 和 setter
+    Object.defineProperty(input, 'value', {
+        get: function() {
+            // 确保读取时返回字符串（即使原始值为 undefined/null）
+            const originalValue = descriptor.get.call(this);
+            return originalValue != null ? String(originalValue) : '';
+        },
+        set: function(value) {
+            // 显式将值转换为字符串后写入
+            const strValue = String(value);
+            descriptor.set.call(this, strValue);
+            this.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    });
+
+    // 初始化输入框值为空字符串（避免初始值为 undefined）
+    input.value = '';
+}
+document.addEventListener('DOMContentLoaded', hookInput);
+
 // 显示详情 - 修改为支持自定义API
 async function showDetails(id, vod_name, sourceCode) {
     // 密码保护校验
@@ -927,7 +971,10 @@ async function showDetails(id, vod_name, sourceCode) {
             apiParams = '&source=' + sourceCode;
         }
         
-        const response = await fetch('/api/detail?id=' + encodeURIComponent(id) + apiParams);
+        // Add a timestamp to prevent caching
+        const timestamp = new Date().getTime();
+        const cacheBuster = `&_t=${timestamp}`;
+        const response = await fetch(`/api/detail?id=${encodeURIComponent(id)}${apiParams}${cacheBuster}`);
         
         const data = await response.json();
         
@@ -961,7 +1008,7 @@ async function showDetails(id, vod_name, sourceCode) {
             episodesReversed = false; // 默认正序
             modalContent.innerHTML = `
                 <div class="flex justify-end mb-2">
-                    <button onclick="toggleEpisodeOrder('${sourceCode}')" class="px-4 py-1 bg-[#222] hover:bg-[#333] border border-[#333] rounded-lg transition-colors flex items-center space-x-1">
+                    <button onclick="toggleEpisodeOrder('${sourceCode}', '${id}')" class="px-4 py-1 bg-[#222] hover:bg-[#333] border border-[#333] rounded-lg transition-colors flex items-center space-x-1">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                             <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.586L7.707 9.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 10.586V7z" clip-rule="evenodd" />
                         </svg>
@@ -974,7 +1021,7 @@ async function showDetails(id, vod_name, sourceCode) {
                     </button>
                 </div>
                 <div id="episodesGrid" class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
-                    ${renderEpisodes(vod_name, sourceCode)}
+                    ${renderEpisodes(vod_name, sourceCode, id)}
                 </div>
             `;
         } else {
@@ -990,8 +1037,8 @@ async function showDetails(id, vod_name, sourceCode) {
     }
 }
 
-// 更新播放视频函数，修改为在新标签页中打开播放页面，并保存到历史记录
-function playVideo(url, vod_name, sourceCode, episodeIndex = 0) {
+// 更新播放视频函数，修改为使用/watch路径而不是直接打开player.html
+function playVideo(url, vod_name, sourceCode, episodeIndex = 0, vodId = '') {
     // 密码保护校验
     if (window.isPasswordProtected && window.isPasswordVerified) {
         if (window.isPasswordProtected() && !window.isPasswordVerified()) {
@@ -999,73 +1046,75 @@ function playVideo(url, vod_name, sourceCode, episodeIndex = 0) {
             return;
         }
     }
-    if (!url) {
-        showToast('无效的视频链接', 'error');
-        return;
+    
+    // 获取当前路径作为返回页面
+    let currentPath = window.location.href;
+    
+    // 构建播放页面URL，使用watch.html作为中间跳转页
+    let watchUrl = `watch.html?id=${vodId || ''}&source=${sourceCode || ''}&url=${encodeURIComponent(url)}&index=${episodeIndex}&title=${encodeURIComponent(vod_name || '')}`;
+    
+    // 添加返回URL参数
+    if (currentPath.includes('index.html') || currentPath.endsWith('/')) {
+        watchUrl += `&back=${encodeURIComponent(currentPath)}`;
     }
     
-    // 获取当前视频来源名称（从模态框标题中提取）
-    let sourceName = '';
-    const modalTitle = document.getElementById('modalTitle');
-    if (modalTitle) {
-        const sourceSpan = modalTitle.querySelector('span.text-gray-400');
-        if (sourceSpan) {
-            // 提取括号内的来源名称, 例如从 "(黑木耳)" 提取 "黑木耳"
-            const sourceText = sourceSpan.textContent;
-            const match = sourceText.match(/\(([^)]+)\)/);
-            if (match && match[1]) {
-                sourceName = match[1].trim();
-            }
-        }
+    // 保存当前状态到localStorage
+    try {
+        localStorage.setItem('currentVideoTitle', vod_name || '未知视频');
+        localStorage.setItem('currentEpisodes', JSON.stringify(currentEpisodes));
+        localStorage.setItem('currentEpisodeIndex', episodeIndex);
+        localStorage.setItem('currentSourceCode', sourceCode || '');
+        localStorage.setItem('lastPlayTime', Date.now());
+        localStorage.setItem('lastSearchPage', currentPath);
+        localStorage.setItem('lastPageUrl', currentPath);  // 确保保存返回页面URL
+    } catch (e) {
+        console.error('保存播放状态失败:', e);
     }
     
-    // 保存当前状态到localStorage，让播放页面可以获取
-    const currentVideoTitle = vod_name;
-    localStorage.setItem('currentVideoTitle', currentVideoTitle);
-    localStorage.setItem('currentEpisodeIndex', episodeIndex);
-    localStorage.setItem('currentEpisodes', JSON.stringify(currentEpisodes));
-    localStorage.setItem('episodesReversed', episodesReversed);
-    
-    // 构建视频信息对象，使用标题作为唯一标识
-    const videoTitle = vod_name || currentVideoTitle;
-    const videoInfo = {
-        title: videoTitle,
-        url: url,
-        episodeIndex: episodeIndex,
-        sourceName: sourceName,
-        timestamp: Date.now(),
-        // 重要：将完整的剧集信息也添加到历史记录中
-        episodes: currentEpisodes && currentEpisodes.length > 0 ? [...currentEpisodes] : []
-    };
-    
-    // 保存到观看历史，添加sourceName
-    if (typeof addToViewingHistory === 'function') {
-        addToViewingHistory(videoInfo);
-    }
-    
-    // 构建播放页面URL，传递必要参数
-    const playerUrl = `player.html?url=${encodeURIComponent(url)}&title=${encodeURIComponent(videoTitle)}&index=${episodeIndex}&source=${encodeURIComponent(sourceName)}&source_code=${encodeURIComponent(sourceCode)}`;
-    showVideoPlayer(playerUrl);
+    // 在当前标签页中打开播放页面
+    window.location.href = watchUrl;
 }
 
 // 弹出播放器页面
 function showVideoPlayer(url) {
-    // 临时隐藏搜索结果，防止高度超出播放器而出现滚动条
+    // 在打开播放器前，隐藏详情弹窗
+    const detailModal = document.getElementById('modal');
+    if (detailModal) {
+        detailModal.classList.add('hidden');
+    }
+    // 临时隐藏搜索结果和豆瓣区域，防止高度超出播放器而出现滚动条
     document.getElementById('resultsArea').classList.add('hidden');
+    document.getElementById('doubanArea').classList.add('hidden');
     // 在框架中打开播放页面
     videoPlayerFrame = document.createElement('iframe');
     videoPlayerFrame.id = 'VideoPlayerFrame';
     videoPlayerFrame.className = 'fixed w-full h-screen z-40';
     videoPlayerFrame.src = url;
     document.body.appendChild(videoPlayerFrame);
+    // 将焦点移入iframe
+    videoPlayerFrame.focus();
 }
 
 // 关闭播放器页面
-function closeVideoPlayer() {
+function closeVideoPlayer(home = false) {
     videoPlayerFrame = document.getElementById('VideoPlayerFrame');
     if (videoPlayerFrame) {
         videoPlayerFrame.remove();
+        // 恢复搜索结果显示
         document.getElementById('resultsArea').classList.remove('hidden');
+        // 关闭播放器时也隐藏详情弹窗
+        const detailModal = document.getElementById('modal');
+        if (detailModal) {
+            detailModal.classList.add('hidden');
+        }
+        // 如果启用豆瓣区域则显示豆瓣区域
+        if (localStorage.getItem('doubanEnabled') === 'true') {
+            document.getElementById('doubanArea').classList.remove('hidden');
+        }
+    }
+    if (home) {
+        // 刷新主页
+        window.location.href = '/'
     }
 }
 
@@ -1094,13 +1143,13 @@ function handlePlayerError() {
 }
 
 // 辅助函数用于渲染剧集按钮（使用当前的排序状态）
-function renderEpisodes(vodName, sourceCode) {
+function renderEpisodes(vodName, sourceCode, vodId) {
     const episodes = episodesReversed ? [...currentEpisodes].reverse() : currentEpisodes;
     return episodes.map((episode, index) => {
         // 根据倒序状态计算真实的剧集索引
         const realIndex = episodesReversed ? currentEpisodes.length - 1 - index : index;
         return `
-            <button id="episode-${realIndex}" onclick="playVideo('${episode}','${vodName.replace(/"/g, '&quot;')}', '${sourceCode}', ${realIndex})" 
+            <button id="episode-${realIndex}" onclick="playVideo('${episode}','${vodName.replace(/"/g, '&quot;')}', '${sourceCode}', ${realIndex}, '${vodId}')" 
                     class="px-4 py-2 bg-[#222] hover:bg-[#333] border border-[#333] rounded-lg transition-colors text-center episode-btn">
                 第${realIndex + 1}集
             </button>
@@ -1120,16 +1169,16 @@ function copyLinks() {
 }
 
 // 切换排序状态的函数
-function toggleEpisodeOrder(sourceCode) {
+function toggleEpisodeOrder(sourceCode, vodId) {
     episodesReversed = !episodesReversed;
     // 重新渲染剧集区域，使用 currentVideoTitle 作为视频标题
     const episodesGrid = document.getElementById('episodesGrid');
     if (episodesGrid) {
-        episodesGrid.innerHTML = renderEpisodes(currentVideoTitle, sourceCode);
+        episodesGrid.innerHTML = renderEpisodes(currentVideoTitle, sourceCode, vodId);
     }
     
     // 更新按钮文本和箭头方向
-    const toggleBtn = document.querySelector(`button[onclick="toggleEpisodeOrder('${sourceCode}')"]`);
+    const toggleBtn = document.querySelector(`button[onclick="toggleEpisodeOrder('${sourceCode}', '${vodId}')"]`);
     if (toggleBtn) {
         toggleBtn.querySelector('span').textContent = episodesReversed ? '正序排列' : '倒序排列';
         const arrowIcon = toggleBtn.querySelector('svg');
@@ -1293,100 +1342,6 @@ async function importConfig() {
     });
 }
 
-// 从URL导入配置
-async function importConfigFromUrl() {
-    // 创建模态框元素
-    let modal = document.getElementById('importUrlModal');
-    if (modal) {
-        document.body.removeChild(modal);
-    }
-
-    modal = document.createElement('div');
-    modal.id = 'importUrlModal';
-    modal.className = 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-40';
-
-    modal.innerHTML = `
-        <div class="bg-[#191919] rounded-lg p-6 max-w-md w-full max-h-[90vh] overflow-y-auto relative">
-            <button id="closeUrlModal" class="absolute top-4 right-4 text-gray-400 hover:text-white text-xl">&times;</button>
-            
-            <h3 class="text-xl font-bold mb-4">从URL导入配置</h3>
-            
-            <div class="mb-4">
-                <input type="text" id="configUrl" placeholder="输入配置文件URL" 
-                       class="w-full px-3 py-2 bg-[#222] border border-[#333] rounded-lg text-white focus:outline-none focus:ring-1 focus:ring-blue-500">
-            </div>
-            
-            <div class="flex justify-end space-x-2">
-                <button id="confirmUrlImport" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">导入</button>
-                <button id="cancelUrlImport" class="bg-[#444] hover:bg-[#555] text-white px-4 py-2 rounded">取消</button>
-            </div>
-        </div>`;
-
-    document.body.appendChild(modal);
-
-    // 关闭按钮事件
-    document.getElementById('closeUrlModal').addEventListener('click', () => {
-        document.body.removeChild(modal);
-    });
-
-    // 取消按钮事件
-    document.getElementById('cancelUrlImport').addEventListener('click', () => {
-        document.body.removeChild(modal);
-    });
-
-    // 确认导入按钮事件
-    document.getElementById('confirmUrlImport').addEventListener('click', async () => {
-        const url = document.getElementById('configUrl').value.trim();
-        if (!url) {
-            showToast('请输入配置文件URL', 'warning');
-            return;
-        }
-
-        if (!url.startsWith('http://') && !url.startsWith('https://')) {
-            showToast('URL必须以http://或https://开头', 'warning');
-            return;
-        }
-
-        showLoading('正在从URL导入配置...');
-        
-        try {
-            // 获取配置文件
-            const response = await fetch(PROXY_URL + encodeURIComponent(url));
-            if (!response.ok) throw '获取配置文件失败';
-
-            const config = await response.json();
-            if (config.name !== 'LibreTV-Settings') throw '配置文件格式不正确';
-
-            // 验证哈希
-            const dataHash = await sha256(JSON.stringify(config.data));
-            if (dataHash !== config.hash) throw '配置文件哈希值不匹配';
-
-            // 导入配置
-            for (let item in config.data) {
-                localStorage.setItem(item, config.data[item]);
-            }
-            
-            showToast('配置文件导入成功，3 秒后自动刷新本页面。', 'success');
-            setTimeout(() => {
-                window.location.reload();
-            }, 3000);
-        } catch (error) {
-            const message = typeof error === 'string' ? error : '导入配置失败';
-            showToast(`从URL导入配置出错 (${message})`, 'error');
-        } finally {
-            hideLoading();
-            document.body.removeChild(modal);
-        }
-    });
-
-    // 点击模态框外部关闭
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-            document.body.removeChild(modal);
-        }
-    });
-}
-
 // 配置文件导出功能
 async function exportConfig() {
     // 存储配置数据
@@ -1449,14 +1404,4 @@ function saveStringAsFile(content, fileName) {
     window.URL.revokeObjectURL(url);
 }
 
-// app.js 或路由文件中
-const authMiddleware = require('./middleware/auth');
-const config = require('./config');
-
-// 对所有请求启用鉴权（按需调整作用范围）
-if (config.auth.enabled) {
-  app.use(authMiddleware);
-}
-
-// 或者针对特定路由
-app.use('/api', authMiddleware);
+// 移除Node.js的require语句，因为这是在浏览器环境中运行的
